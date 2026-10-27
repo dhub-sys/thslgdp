@@ -1258,6 +1258,8 @@ class WR_Admin {
 			array( 'Υποχρεωτική επαλήθευση δύο βημάτων (2FA)', $yes, sprintf( 'Ανά σύνδεση, δεμένη με IP και browser. Λήγει μετά από %d λεπτά αδράνειας ή %d ώρες.', defined( 'WR_IDLE_MINUTES' ) ? (int) WR_IDLE_MINUTES : 30, defined( 'WR_2FA_SESSION_HOURS' ) ? (int) WR_2FA_SESSION_HOURS : 8 ) ),
 			array( 'Επιτρεπόμενοι χρήστες (WR_ALLOWED_USERS)', defined( 'WR_ALLOWED_USERS' ) && WR_ALLOWED_USERS ? esc_html( (string) WR_ALLOWED_USERS ) : $opt, 'Μόνο αυτοί οι χρήστες βλέπουν το σύστημα εγγυήσεων, ανεξάρτητα από τον ρόλο τους.' ),
 			array( 'Επιτρεπόμενες IP (WR_ALLOWED_IPS)', defined( 'WR_ALLOWED_IPS' ) && WR_ALLOWED_IPS ? esc_html( (string) WR_ALLOWED_IPS ) : $opt, 'Πρόσβαση μόνο από το γραφείο / VPN. Η τρέχουσα IP σας: <code>' . esc_html( WR_Util::client_ip() ) . '</code>' ),
+			array( 'Επαλήθευση δύο βημάτων στη σύνδεση του WordPress (WR_LOGIN_2FA)', WR_Login::enabled() ? $yes : $no, 'Για τους ρόλους: ' . esc_html( defined( 'WR_2FA_ROLES' ) ? (string) WR_2FA_ROLES : WR_Login::DEFAULT_ROLES ) . ' και όσους έχουν πρόσβαση στις εγγυήσεις. Μπλοκάρει τη σύνδεση μέσω XML-RPC/application passwords για αυτούς.' ),
+			array( 'Όριο αποτυχημένων συνδέσεων', WR_Login::enabled() ? $yes : $no, '10 αποτυχίες από την ίδια IP σε 15 λεπτά → αποκλεισμός 30 λεπτών. Τα μηνύματα λάθους δεν αποκαλύπτουν αν υπάρχει ο χρήστης.' ),
 			array( 'HTTPS', is_ssl() ? $yes : $no, 'Απαραίτητο για την προστασία των cookies σύνδεσης.' ),
 			array( 'Απενεργοποιημένη επεξεργασία αρχείων από το admin (DISALLOW_FILE_EDIT)', defined( 'DISALLOW_FILE_EDIT' ) && DISALLOW_FILE_EDIT ? $yes : $no, 'Αποτρέπει την αλλαγή κώδικα από το wp-admin αν παραβιαστεί λογαριασμός.' ),
 			array( 'CAPTCHA στις δημόσιες φόρμες', WR_Security::captcha_enabled() ? $yes : $no, 'Cloudflare Turnstile – ρυθμίζεται στις Ρυθμίσεις.' ),
@@ -1275,14 +1277,14 @@ class WR_Admin {
 		echo '<p class="description">Προσοχή με το WR_ALLOWED_IPS: αν η IP του γραφείου σας είναι δυναμική, μπορεί να κλειδωθείτε έξω. Τότε αφαιρέστε τη γραμμή από το wp-config.php μέσω cPanel → File Manager.</p></div>';
 
 		$users = get_users( array( 'fields' => 'all' ) );
-		echo '<div class="wr-panel"><h2>Χρήστες με πρόσβαση</h2><table class="widefat striped"><thead><tr><th>Χρήστης</th><th>Ρόλος</th><th>Δικαιώματα</th><th>2FA</th><th>Τελευταία επαλήθευση</th><th></th></tr></thead><tbody>';
+		echo '<div class="wr-panel"><h2>Χρήστες με 2FA ή πρόσβαση στις εγγυήσεις</h2><table class="widefat striped"><thead><tr><th>Χρήστης</th><th>Ρόλος</th><th>Δικαιώματα</th><th>2FA</th><th>Τελευταία επαλήθευση</th><th></th></tr></thead><tbody>';
 		foreach ( $users as $u ) {
 			$caps = array_values( array_filter( WR_Access::CAPS, fn( $c ) => ! empty( $u->allcaps[ $c ] ) ) );
-			if ( ! $caps ) {
+			if ( ! $caps && ! WR_Login::requires_2fa( $u ) ) {
 				continue;
 			}
 			$allowed = WR_Access::user_allowed( $u );
-			$last    = self::last_audit( 'twofa_success', $u->ID );
+			$last    = max( (string) self::last_audit( 'twofa_success', $u->ID ), (string) self::last_audit( 'login_2fa_success', $u->ID ) );
 			$reset   = WR_Access::has_2fa( $u->ID )
 				? self::form_open( 'twofa_reset', 'data-confirm="Ο χρήστης θα πρέπει να ρυθμίσει ξανά την εφαρμογή επαλήθευσης. Συνέχεια;"' ) . '<input type="hidden" name="user_id" value="' . (int) $u->ID . '"><button class="button button-small">Επαναφορά 2FA</button></form>'
 				: '';
@@ -1291,7 +1293,7 @@ class WR_Admin {
 				esc_html( $u->user_login ),
 				esc_html( $u->user_email ),
 				esc_html( implode( ', ', $u->roles ) ),
-				$allowed ? esc_html( implode( ', ', $caps ) ) : '<span class="wr-badge wr-badge--void">Αποκλεισμένος (WR_ALLOWED_USERS)</span>', // phpcs:ignore
+				! $caps ? 'μόνο σύνδεση στο WordPress' : ( $allowed ? esc_html( implode( ', ', $caps ) ) : '<span class="wr-badge wr-badge--void">Αποκλεισμένος (WR_ALLOWED_USERS)</span>' ), // phpcs:ignore
 				WR_Access::has_2fa( $u->ID ) ? '<span class="wr-badge wr-badge--active">Ενεργό</span>' : '<span class="wr-badge wr-badge--expired">Δεν έχει ρυθμιστεί</span>', // phpcs:ignore
 				esc_html( $last ?: '—' ),
 				$reset // phpcs:ignore
@@ -1300,7 +1302,7 @@ class WR_Admin {
 		echo '</tbody></table><p class="description">Η «Επαναφορά 2FA» χρειάζεται όταν κάποιος χάσει το κινητό του και τους κωδικούς ανάκτησης. Στην επόμενη είσοδο θα ρυθμίσει ξανά την εφαρμογή.</p></div>';
 
 		global $wpdb;
-		$events = $wpdb->get_results( 'SELECT * FROM ' . WR_DB::table( 'audit_log' ) . " WHERE action IN ('twofa_failed','twofa_lockout','twofa_reset','twofa_enabled','twofa_recovery_used','access_denied','warranties_export') ORDER BY id DESC LIMIT 30" );
+		$events = $wpdb->get_results( 'SELECT * FROM ' . WR_DB::table( 'audit_log' ) . " WHERE action IN ('twofa_failed','twofa_lockout','twofa_reset','twofa_enabled','twofa_recovery_used','access_denied','warranties_export','login_2fa_success','login_ip_blocked') ORDER BY id DESC LIMIT 30" );
 		echo '<div class="wr-panel"><h2>Πρόσφατα συμβάντα ασφαλείας</h2>';
 		self::render_audit( $events, true );
 		echo '</div></div>';

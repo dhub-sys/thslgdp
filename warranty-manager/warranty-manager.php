@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Warranty Manager
  * Description:       Ηλεκτρονική ενεργοποίηση και διαχείριση εγγυήσεων προϊόντων με σειριακούς αριθμούς, ειδοποιήσεις email/SMS και συμμόρφωση GDPR.
- * Version:           0.2.0
+ * Version:           0.3.0
  * Requires at least: 6.2
  * Requires PHP:      8.1
  * Text Domain:       warranty-manager
@@ -11,7 +11,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WR_VERSION', '0.2.0' );
+define( 'WR_VERSION', '0.3.0' );
 define( 'WR_DB_VERSION', '2' );
 define( 'WR_FILE', __FILE__ );
 define( 'WR_DIR', plugin_dir_path( __FILE__ ) );
@@ -44,7 +44,9 @@ WR_Frontend::init();
 WR_Privacy::init();
 
 require_once WR_DIR . 'includes/class-wr-access.php';
+require_once WR_DIR . 'includes/class-wr-login.php';
 WR_Access::init();
+WR_Login::init();
 
 if ( is_admin() ) {
 	require_once WR_DIR . 'includes/admin/class-wr-admin.php';

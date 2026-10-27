@@ -228,9 +228,15 @@ class WR_Access {
 		}
 	}
 
-	private static function mark_verified( int $uid ): void {
-		$all                         = self::sessions( $uid );
-		$all[ self::session_key() ] = array(
+	/**
+	 * Marks a login session as 2FA-verified. $token is a WordPress session token
+	 * (used right after login, before the auth cookie reaches the browser);
+	 * empty means the current session.
+	 */
+	public static function mark_verified( int $uid, string $token = '' ): void {
+		$all = self::sessions( $uid );
+		$key = '' === $token ? self::session_key() : hash( 'sha256', $token );
+		$all[ $key ] = array(
 			'at'   => time(),
 			'seen' => time(),
 			'fp'   => self::fingerprint(),
@@ -260,7 +266,7 @@ class WR_Access {
 		return WR_Crypto::decrypt( (string) get_user_meta( $uid, self::META_SECRET, true ) );
 	}
 
-	private static function locked_until( int $uid ): int {
+	public static function locked_until( int $uid ): int {
 		$f = get_user_meta( $uid, self::META_FAILS, true );
 		return is_array( $f ) && ( $f['until'] ?? 0 ) > time() ? (int) $f['until'] : 0;
 	}
@@ -284,7 +290,7 @@ class WR_Access {
 			if ( $to && $user ) {
 				wp_mail(
 					$to,
-					'[Εγγυήσεις] Κλείδωμα λογαριασμού μετά από λάθος κωδικούς 2FA',
+					'[Ασφάλεια] Κλείδωμα λογαριασμού μετά από λάθος κωδικούς 2FA',
 					sprintf( "Ο χρήστης %s έδωσε %d λάθος κωδικούς 2FA και κλειδώθηκε για 15 λεπτά.\nIP: %s\nΏρα: %s\n\nΑν δεν ήταν ο ίδιος, αλλάξτε άμεσα τον κωδικό πρόσβασής του στο WordPress.", $user->user_login, self::MAX_FAILS, WR_Util::client_ip(), WR_Util::now() )
 				);
 			}
@@ -293,11 +299,12 @@ class WR_Access {
 	}
 
 	/**
-	 * Checks a TOTP or recovery code for the current user. Used both at login
-	 * to the area and as step-up confirmation for sensitive actions (exports).
+	 * Checks a TOTP or recovery code (current user unless $uid is given). Used at
+	 * WordPress login, at entry to the warranty area and as step-up confirmation
+	 * for sensitive actions (exports).
 	 */
-	public static function check_code( string $code, string $context ): bool {
-		$uid = get_current_user_id();
+	public static function check_code( string $code, string $context, int $uid = 0 ): bool {
+		$uid = $uid ?: get_current_user_id();
 		if ( ! $uid || self::locked_until( $uid ) ) {
 			return false;
 		}
@@ -338,15 +345,24 @@ class WR_Access {
 	/* ------------------------------------------------------------------ */
 
 	public static function register_page(): void {
-		add_submenu_page( 'options.php', 'Επιβεβαίωση ταυτότητας', 'Επιβεβαίωση ταυτότητας', 'wr_view', self::PAGE, array( __CLASS__, 'render_page' ) );
+		// 'read': users who must enroll for WordPress login may not have warranty access.
+		add_submenu_page( 'options.php', 'Επιβεβαίωση ταυτότητας', 'Επιβεβαίωση ταυτότητας', 'read', self::PAGE, array( __CLASS__, 'render_page' ) );
 	}
 
 	private static function redirect_target(): string {
 		$to = isset( $_REQUEST['redirect_to'] ) ? esc_url_raw( rawurldecode( wp_unslash( $_REQUEST['redirect_to'] ) ) ) : '';
-		return wp_validate_redirect( $to, admin_url( 'admin.php?page=wr-dashboard' ) );
+		return wp_validate_redirect( $to, current_user_can( 'wr_view' ) ? admin_url( 'admin.php?page=wr-dashboard' ) : admin_url() );
+	}
+
+	/** May the current user use the 2FA screen (enroll / verify)? */
+	private static function may_use_2fa(): bool {
+		return current_user_can( 'wr_view' ) || WR_Login::requires_2fa( wp_get_current_user() );
 	}
 
 	public static function render_page(): void {
+		if ( ! self::may_use_2fa() ) {
+			wp_die( 'Δεν επιτρέπεται.', 403 );
+		}
 		if ( ! WR_Crypto::ready() ) {
 			self::die_missing_key();
 		}
@@ -381,7 +397,7 @@ class WR_Access {
 			$uri = WR_TOTP::uri( $pending, $user->user_login, wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ) . ' Εγγυήσεις' );
 			wp_enqueue_script( 'wr-qrcode', WR_URL . 'assets/vendor/qrcode.js', array(), WR_VERSION, true );
 			echo '<div class="wr-panel"><h2>Ενεργοποίηση επαλήθευσης δύο βημάτων</h2>';
-			echo '<p>Η πρόσβαση στα στοιχεία πελατών απαιτεί επαλήθευση δύο βημάτων.</p><ol>';
+			echo '<p>Ο λογαριασμός σας απαιτεί επαλήθευση δύο βημάτων. Από εδώ και πέρα, μετά τον κωδικό πρόσβασης, θα ζητείται και ένας 6ψήφιος κωδικός από το κινητό σας.</p><ol>';
 			echo '<li>Εγκαταστήστε στο κινητό σας μια εφαρμογή επαλήθευσης: Google Authenticator, Microsoft Authenticator ή αντίστοιχη.</li>';
 			echo '<li>Σκανάρετε τον κωδικό QR:</li></ol>';
 			echo '<div id="wr-qr" data-uri="' . esc_attr( $uri ) . '"></div>';
@@ -421,7 +437,7 @@ class WR_Access {
 	public static function action_verify(): void {
 		check_admin_referer( 'wr_2fa_verify' );
 		$uid = get_current_user_id();
-		if ( ! current_user_can( 'wr_view' ) || ! WR_Crypto::ready() || ! self::has_2fa( $uid ) ) {
+		if ( ! self::may_use_2fa() || ! WR_Crypto::ready() || ! self::has_2fa( $uid ) ) {
 			wp_die( 'Δεν επιτρέπεται.', 403 );
 		}
 		if ( self::locked_until( $uid ) ) {
@@ -439,7 +455,7 @@ class WR_Access {
 	public static function action_enroll(): void {
 		check_admin_referer( 'wr_2fa_enroll' );
 		$uid = get_current_user_id();
-		if ( ! current_user_can( 'wr_view' ) || ! WR_Crypto::ready() || self::has_2fa( $uid ) ) {
+		if ( ! self::may_use_2fa() || ! WR_Crypto::ready() || self::has_2fa( $uid ) ) {
 			wp_die( 'Δεν επιτρέπεται.', 403 );
 		}
 		if ( self::locked_until( $uid ) ) {
@@ -466,6 +482,14 @@ class WR_Access {
 		set_transient( 'wr_recovery_show_' . $uid, WR_Crypto::encrypt( wp_json_encode( $plain ) ), 10 * MINUTE_IN_SECONDS );
 		self::mark_verified( $uid );
 		WR_Audit::log( 'twofa_enabled', 'user', $uid );
+		// Alert the account owner and the company: if someone else enrolled with a stolen password, they will notice.
+		$user = get_userdata( $uid );
+		$msg  = sprintf( "Ενεργοποιήθηκε επαλήθευση δύο βημάτων στον λογαριασμό %s.\nIP: %s\nΏρα: %s\n\nΑν δεν το κάνατε εσείς, επικοινωνήστε αμέσως με τον διαχειριστή του site.", $user->user_login, WR_Util::client_ip(), WR_Util::now() );
+		wp_mail( $user->user_email, '[Ασφάλεια] Ενεργοποίηση επαλήθευσης δύο βημάτων', $msg );
+		$company = (string) WR_Settings::get( 'admin_email' );
+		if ( $company && strtolower( $company ) !== strtolower( $user->user_email ) ) {
+			wp_mail( $company, '[Ασφάλεια] Ενεργοποίηση επαλήθευσης δύο βημάτων', $msg );
+		}
 		self::back_to_page();
 	}
 }

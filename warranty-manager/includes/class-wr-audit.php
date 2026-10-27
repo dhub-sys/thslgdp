@@ -53,6 +53,8 @@ class WR_Audit {
 			'twofa_reset'         => 'Επαναφορά 2FA χρήστη',
 			'twofa_recovery_used' => 'Χρήση κωδικού ανάκτησης',
 			'access_denied'       => 'Άρνηση πρόσβασης (χρήστης/IP εκτός λίστας)',
+			'login_2fa_success'   => 'Σύνδεση στο WordPress με 2FA',
+			'login_ip_blocked'    => 'Αποκλεισμός IP μετά από αποτυχημένες συνδέσεις',
 		);
 		return $labels[ $action ] ?? $action;
 	}
