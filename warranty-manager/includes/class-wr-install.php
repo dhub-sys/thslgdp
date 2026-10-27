@@ -19,10 +19,24 @@ class WR_Install {
 		if ( get_option( 'wr_db_version' ) !== WR_DB_VERSION ) {
 			self::install();
 		}
+		if ( WR_Crypto::ready() && '1' !== get_option( 'wr_pii_encrypted' ) ) {
+			self::encrypt_existing();
+		}
 	}
 
 	public static function install(): void {
+		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		// v1 -> v2: personal data columns become ciphertext (TEXT); their old plain indexes must go first.
+		$warr = WR_DB::table( 'warranties' );
+		if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $warr ) ) ) {
+			foreach ( array( 'email', 'phone' ) as $index ) {
+				if ( $wpdb->get_var( $wpdb->prepare( "SHOW INDEX FROM $warr WHERE Key_name = %s", $index ) ) ) {
+					$wpdb->query( "ALTER TABLE $warr DROP INDEX $index" );
+				}
+			}
+		}
 		dbDelta( WR_DB::schema() );
 
 		self::add_caps();
@@ -82,6 +96,40 @@ class WR_Install {
 				);
 			}
 		}
+	}
+
+	/**
+	 * Encrypts personal data stored before encryption existed (or before the key
+	 * was configured). Idempotent: already encrypted values are skipped.
+	 */
+	public static function encrypt_existing(): void {
+		global $wpdb;
+		$w = WR_DB::table( 'warranties' );
+		$c = WR_DB::table( 'consents' );
+		$l = WR_DB::table( 'notification_log' );
+		$p = WR_Crypto::PREFIX . '%';
+
+		foreach ( $wpdb->get_results( $wpdb->prepare( "SELECT id, full_name, email, phone, notes FROM $w WHERE (full_name <> '' AND full_name NOT LIKE %s) OR (email <> '' AND email NOT LIKE %s) OR (phone <> '' AND phone NOT LIKE %s) OR (notes <> '' AND notes NOT LIKE %s)", $p, $p, $p, $p ) ) as $r ) {
+			$plain = array();
+			foreach ( WR_Warranties::PII as $f ) {
+				$plain[ $f ] = WR_Crypto::decrypt( (string) $r->$f );
+			}
+			$wpdb->update( $w, WR_Warranties::encrypt_pii( $plain ), array( 'id' => $r->id ) );
+		}
+		foreach ( $wpdb->get_results( $wpdb->prepare( "SELECT id, ip_address, user_agent FROM $c WHERE (ip_address <> '' AND ip_address NOT LIKE %s) OR (user_agent <> '' AND user_agent NOT LIKE %s)", $p, $p ) ) as $r ) {
+			$wpdb->update(
+				$c,
+				array(
+					'ip_address' => WR_Crypto::encrypt( WR_Crypto::decrypt( (string) $r->ip_address ) ),
+					'user_agent' => WR_Crypto::encrypt( WR_Crypto::decrypt( (string) $r->user_agent ) ),
+				),
+				array( 'id' => $r->id )
+			);
+		}
+		foreach ( $wpdb->get_results( $wpdb->prepare( "SELECT id, recipient FROM $l WHERE recipient <> '' AND recipient NOT LIKE %s", $p ) ) as $r ) {
+			$wpdb->update( $l, array( 'recipient' => WR_Crypto::encrypt( $r->recipient ) ), array( 'id' => $r->id ) );
+		}
+		update_option( 'wr_pii_encrypted', '1', false );
 	}
 
 	/** Directory for temporary import files, closed to web access. */

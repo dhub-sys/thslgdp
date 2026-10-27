@@ -28,7 +28,7 @@ class WR_Cron {
 	}
 
 	public static function run(): void {
-		if ( get_transient( 'wr_cron_lock' ) ) {
+		if ( get_transient( 'wr_cron_lock' ) || ! WR_Crypto::ready() ) {
 			return;
 		}
 		set_transient( 'wr_cron_lock', 1, 10 * MINUTE_IN_SECONDS );
@@ -88,7 +88,7 @@ class WR_Cron {
 				self::MAX_TRIES,
 				self::BATCH
 			);
-			$rows = $wpdb->get_results( $sql );
+			$rows = WR_Warranties::fetch_all( $sql );
 			if ( ! $rows ) {
 				continue;
 			}

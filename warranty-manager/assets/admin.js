@@ -15,6 +15,18 @@
 		}
 	} );
 
+	// 2FA enrollment QR code, drawn locally (no third-party service sees the secret).
+	window.addEventListener( 'load', function () {
+		var el = document.getElementById( 'wr-qr' );
+		if ( ! el || typeof window.qrcode !== 'function' ) {
+			return;
+		}
+		var qr = window.qrcode( 0, 'M' );
+		qr.addData( el.getAttribute( 'data-uri' ) );
+		qr.make();
+		el.innerHTML = qr.createSvgTag( { cellSize: 5, margin: 4, scalable: false } );
+	} );
+
 	// Chunked import with progress.
 	var box = document.getElementById( 'wr-import' );
 	if ( ! box || box.getAttribute( 'data-status' ) !== 'pending' ) {
@@ -53,6 +65,10 @@
 			} )
 			.then( function ( res ) {
 				if ( ! res.success ) {
+					if ( res.data && res.data.message ) {
+						retries = 99;
+						status.textContent = res.data.message;
+					}
 					throw new Error( 'server' );
 				}
 				retries = 0;
@@ -67,6 +83,9 @@
 				}
 			} )
 			.catch( function () {
+				if ( retries >= 99 ) {
+					return;
+				}
 				if ( retries++ < 3 ) {
 					setTimeout( step, 2000 * retries );
 				} else {

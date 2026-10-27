@@ -2,7 +2,7 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Table names.
+ * Table names and schema. Customer personal data columns hold ciphertext (see WR_Crypto).
  */
 class WR_DB {
 
@@ -70,9 +70,12 @@ CREATE TABLE $warr (
   code varchar(32) NOT NULL,
   serial_id bigint(20) unsigned NOT NULL,
   product_id bigint(20) unsigned DEFAULT NULL,
-  full_name varchar(191) NOT NULL DEFAULT '',
-  email varchar(191) NOT NULL DEFAULT '',
-  phone varchar(32) NOT NULL DEFAULT '',
+  full_name text NULL,
+  email text NULL,
+  phone text NULL,
+  email_idx char(64) NOT NULL DEFAULT '',
+  phone_idx char(64) NOT NULL DEFAULT '',
+  name_idx varchar(255) NOT NULL DEFAULT '',
   starts_on date NOT NULL,
   expires_on date NOT NULL,
   status varchar(16) NOT NULL DEFAULT 'active',
@@ -85,8 +88,8 @@ CREATE TABLE $warr (
   PRIMARY KEY  (id),
   UNIQUE KEY code (code),
   UNIQUE KEY serial_id (serial_id),
-  KEY email (email),
-  KEY phone (phone),
+  KEY email_idx (email_idx),
+  KEY phone_idx (phone_idx),
   KEY expires_on (expires_on),
   KEY status (status)
 ) $c;
@@ -109,8 +112,8 @@ CREATE TABLE $consents (
   terms_version varchar(32) NOT NULL DEFAULT '',
   terms_hash char(64) NOT NULL DEFAULT '',
   accepted_at datetime NOT NULL,
-  ip_address varchar(45) DEFAULT NULL,
-  user_agent varchar(255) DEFAULT NULL,
+  ip_address text NULL,
+  user_agent text NULL,
   recorded_by bigint(20) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY  (id),
   KEY warranty_id (warranty_id)
@@ -130,7 +133,7 @@ CREATE TABLE $notlog (
   rule_id bigint(20) unsigned DEFAULT NULL,
   kind varchar(24) NOT NULL,
   channel varchar(8) NOT NULL,
-  recipient varchar(191) NOT NULL DEFAULT '',
+  recipient text NULL,
   status varchar(16) NOT NULL,
   error text NULL,
   sent_at datetime NOT NULL,

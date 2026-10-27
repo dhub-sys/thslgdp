@@ -109,7 +109,7 @@ class WR_Notifier {
 				'rule_id'     => $rule_id,
 				'kind'        => $kind,
 				'channel'     => $channel,
-				'recipient'   => $recipient,
+				'recipient'   => WR_Crypto::ready() ? WR_Crypto::encrypt( $recipient ) : '',
 				'status'      => true === $result ? 'sent' : 'failed',
 				'error'       => is_wp_error( $result ) ? $result->get_error_message() : null,
 				'sent_at'     => WR_Util::now(),

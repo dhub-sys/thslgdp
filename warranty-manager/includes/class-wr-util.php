@@ -132,6 +132,18 @@ class WR_Util {
 		return implode( ' ', $out );
 	}
 
+	/** "giorgos@example.com" -> "g***@example.com" for list views. */
+	public static function mask_email( string $email ): string {
+		$at = strpos( $email, '@' );
+		return false === $at ? ( '' === $email ? '' : '***' ) : mb_substr( $email, 0, 1 ) . '***' . substr( $email, $at );
+	}
+
+	/** "+306941234567" -> "+30694****567". */
+	public static function mask_phone( string $phone ): string {
+		$len = strlen( $phone );
+		return $len < 8 ? ( '' === $phone ? '' : '***' ) : substr( $phone, 0, $len - 7 ) . '****' . substr( $phone, -3 );
+	}
+
 	/** Parses dates from imports: Excel serial numbers, d/m/Y, d-m-Y, d.m.Y, Y-m-d. */
 	public static function parse_date( $value ): ?string {
 		$value = trim( (string) $value );

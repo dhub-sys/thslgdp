@@ -37,7 +37,7 @@ class WR_Frontend {
 		if ( isset( $_GET['wr_done'] ) ) {
 			self::no_cache();
 		}
-		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || empty( $_POST['wr_form'] ) ) {
+		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || empty( $_POST['wr_form'] ) || ! WR_Crypto::ready() ) {
 			return;
 		}
 		self::no_cache();
@@ -224,8 +224,15 @@ class WR_Frontend {
 		exit;
 	}
 
+	private static function unavailable(): string {
+		return '<div class="wr-box"><div class="wr-alert wr-alert--error" role="alert">Η υπηρεσία δεν είναι διαθέσιμη προσωρινά. Δοκιμάστε ξανά αργότερα.</div></div>';
+	}
+
 	public static function shortcode_activate(): string {
 		wp_enqueue_style( 'wr-frontend' );
+		if ( ! WR_Crypto::ready() ) {
+			return self::unavailable();
+		}
 		$st = self::$state['activate'];
 
 		if ( empty( $st ) && isset( $_GET['wr_done'] ) ) {
@@ -414,6 +421,9 @@ class WR_Frontend {
 
 	public static function shortcode_check(): string {
 		wp_enqueue_style( 'wr-frontend' );
+		if ( ! WR_Crypto::ready() ) {
+			return self::unavailable();
+		}
 		$st   = self::$state['check'];
 		$html = '<div class="wr-box">';
 

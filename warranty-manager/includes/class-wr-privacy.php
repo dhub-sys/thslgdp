@@ -34,7 +34,11 @@ class WR_Privacy {
 		if ( '' === $email ) {
 			return array();
 		}
-		return $wpdb->get_results( $wpdb->prepare( WR_Warranties::base_select() . ' WHERE w.email = %s', $email ) );
+		$idx = WR_Crypto::email_index( $email );
+		if ( '' === $idx ) {
+			return array();
+		}
+		return WR_Warranties::fetch_all( $wpdb->prepare( WR_Warranties::base_select() . ' WHERE w.email_idx = %s', $idx ) );
 	}
 
 	public static function export( string $email, int $page = 1 ): array {

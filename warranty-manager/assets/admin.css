@@ -27,3 +27,13 @@
 .wr-details { white-space: pre-wrap; word-break: break-word; background: none; font-size: 12px; }
 .wr-terms-view { max-width: 800px; }
 @media (max-width: 782px) { .wr-wrap .wr-panels { grid-template-columns: 1fr; } }
+.wr-2fa .wr-panel { max-width: 640px; }
+#wr-qr { margin: 8px 0 12px; }
+#wr-qr svg { background: #fff; border: 1px solid #dcdcde; }
+.wr-secret { font-size: 14px; letter-spacing: .05em; }
+.wr-otp { font-size: 20px; letter-spacing: .2em; width: 10em; text-align: center; font-variant-numeric: tabular-nums; }
+.wr-recovery { font-size: 16px; line-height: 1.7; background: #f6f7f7; padding: 12px 16px; display: inline-block; user-select: all; }
+.wr-snippet { background: #f6f7f7; padding: 12px; overflow-x: auto; user-select: all; }
+.wr-export { margin: 0 0 12px; background: #fff; border: 1px solid #dcdcde; border-radius: 6px; padding: 8px 12px; }
+.wr-export summary { cursor: pointer; font-weight: 600; }
+.wr-sec th { width: 34%; }

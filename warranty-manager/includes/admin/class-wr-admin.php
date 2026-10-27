@@ -17,7 +17,7 @@ class WR_Admin {
 		$actions = array(
 			'warranty_update', 'warranty_extend', 'warranty_void', 'warranty_restore', 'warranty_resend', 'warranty_anonymize',
 			'warranty_manual', 'warranties_export', 'import_upload', 'import_revert', 'serial_add', 'serial_status',
-			'product_save', 'product_delete', 'terms_publish', 'rule_save', 'rule_toggle', 'rule_delete', 'settings_save', 'test_send', 'run_cron',
+			'product_save', 'product_delete', 'terms_publish', 'rule_save', 'rule_toggle', 'rule_delete', 'settings_save', 'test_send', 'run_cron', 'twofa_reset',
 		);
 		foreach ( $actions as $a ) {
 			add_action( 'admin_post_wr_' . $a, array( __CLASS__, 'action_' . $a ) );
@@ -35,6 +35,7 @@ class WR_Admin {
 		add_submenu_page( 'wr-dashboard', 'Ειδοποιήσεις', 'Ειδοποιήσεις', 'wr_manage', 'wr-notifications', array( __CLASS__, 'page_notifications' ) );
 		add_submenu_page( 'wr-dashboard', 'Ρυθμίσεις', 'Ρυθμίσεις', 'wr_manage', 'wr-settings', array( __CLASS__, 'page_settings' ) );
 		add_submenu_page( 'wr-dashboard', 'Ιστορικό ενεργειών', 'Ιστορικό ενεργειών', 'wr_manage', 'wr-audit', array( __CLASS__, 'page_audit' ) );
+		add_submenu_page( 'wr-dashboard', 'Ασφάλεια & πρόσβαση', 'Ασφάλεια & πρόσβαση', 'wr_manage', 'wr-security', array( __CLASS__, 'page_security' ) );
 	}
 
 	public static function assets( string $hook ): void {
@@ -184,7 +185,7 @@ class WR_Admin {
 		}
 		echo '</div></div>';
 
-		$soon = $wpdb->get_results( $wpdb->prepare( WR_Warranties::base_select() . " WHERE w.status = 'active' AND w.expires_on BETWEEN %s AND %s ORDER BY w.expires_on LIMIT 10", $today, $in30 ) );
+		$soon = WR_Warranties::fetch_all( $wpdb->prepare( WR_Warranties::base_select() . " WHERE w.status = 'active' AND w.expires_on BETWEEN %s AND %s ORDER BY w.expires_on LIMIT 10", $today, $in30 ) );
 		echo '<div class="wr-panel"><h2>Λήγουν σύντομα</h2>';
 		if ( $soon ) {
 			echo '<table class="widefat striped"><thead><tr><th>Κωδικός</th><th>Πελάτης</th><th>Προϊόν</th><th>Λήξη</th></tr></thead><tbody>';
@@ -261,18 +262,28 @@ class WR_Admin {
 		}
 		$q = self::req( 's' );
 		if ( '' !== $q ) {
-			$like    = '%' . $wpdb->esc_like( $q ) . '%';
-			$key     = WR_Util::serial_key( $q );
-			$phone   = WR_Util::normalize_phone( $q );
-			$where[] = $wpdb->prepare(
-				'(w.code = %s OR s.serial_key = %s OR w.email LIKE %s OR w.full_name LIKE %s OR w.phone LIKE %s OR w.phone = %s)',
-				WR_Util::normalize_code( $q ),
-				$key,
-				$like,
-				$like,
-				$like,
-				$phone ?: '-'
+			// Personal data is encrypted, so it is searched by exact blind index:
+			// full email, full phone number, or whole words of the name.
+			$or = array(
+				$wpdb->prepare( 'w.code = %s', WR_Util::normalize_code( $q ) ),
+				$wpdb->prepare( 's.serial_key = %s', WR_Util::serial_key( $q ) ?: '-' ),
 			);
+			if ( is_email( $q ) ) {
+				$or[] = $wpdb->prepare( 'w.email_idx = %s', WR_Crypto::email_index( $q ) );
+			}
+			$phone = WR_Util::normalize_phone( $q );
+			if ( $phone ) {
+				$or[] = $wpdb->prepare( 'w.phone_idx = %s', WR_Crypto::phone_index( $phone ) );
+			}
+			$tokens = WR_Crypto::name_tokens( $q );
+			if ( $tokens && ! is_email( $q ) ) {
+				$and = array();
+				foreach ( $tokens as $t ) {
+					$and[] = $wpdb->prepare( 'w.name_idx LIKE %s', '%' . substr( WR_Crypto::index( 'n:' . $t ), 0, 16 ) . '%' );
+				}
+				$or[] = '(' . implode( ' AND ', $and ) . ')';
+			}
+			$where[] = '(' . implode( ' OR ', $or ) . ')';
 		}
 		$args = compact( 'status', 'product', 'q' );
 		return implode( ' AND ', $where );
@@ -294,19 +305,16 @@ class WR_Admin {
 		$w     = WR_DB::table( 'warranties' );
 		$s     = WR_DB::table( 'serials' );
 		$total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $w w LEFT JOIN $s s ON s.id = w.serial_id WHERE $where" );
-		$rows  = $wpdb->get_results( WR_Warranties::base_select() . " WHERE $where ORDER BY w.id DESC LIMIT " . self::PER_PAGE . ' OFFSET ' . ( ( $paged - 1 ) * self::PER_PAGE ) );
+		$rows  = WR_Warranties::fetch_all( WR_Warranties::base_select() . " WHERE $where ORDER BY w.id DESC LIMIT " . self::PER_PAGE . ' OFFSET ' . ( ( $paged - 1 ) * self::PER_PAGE ) );
 
 		echo '<div class="wrap wr-wrap"><h1 class="wp-heading-inline">Εγγυήσεις</h1>';
 		if ( current_user_can( 'wr_edit' ) ) {
 			echo ' <a class="page-title-action" href="' . esc_url( self::url( 'wr-warranties', array( 'view' => 'new' ) ) ) . '">Χειροκίνητη ενεργοποίηση</a>';
 		}
-		if ( current_user_can( 'wr_manage' ) ) {
-			echo ' <a class="page-title-action" href="' . esc_url( self::action_url( 'warranties_export', array_filter( array( 'status' => $args['status'], 'product' => $args['product'], 's' => $args['q'] ) ) ) ) . '">Εξαγωγή σε Excel (CSV)</a>';
-		}
 		echo '<hr class="wp-header-end">';
 
 		echo '<form method="get" class="wr-filters"><input type="hidden" name="page" value="wr-warranties">';
-		echo '<input type="search" name="s" value="' . esc_attr( $args['q'] ) . '" placeholder="Κωδικός, σειριακός, email, τηλέφωνο, όνομα" size="40">';
+		echo '<input type="search" name="s" value="' . esc_attr( $args['q'] ) . '" placeholder="Κωδικός, σειριακός, email, κινητό ή όνομα" size="40" title="Email και κινητό αναζητούνται ολόκληρα· το όνομα με ολόκληρες λέξεις (π.χ. επώνυμο).">';
 		echo '<select name="status"><option value="">Όλες οι καταστάσεις</option>';
 		foreach ( array( 'active' => 'Ενεργές', 'expiring' => 'Λήγουν σε 30 ημέρες', 'expired' => 'Ληγμένες', 'void' => 'Ακυρωμένες' ) as $k => $v ) {
 			printf( '<option value="%s"%s>%s</option>', esc_attr( $k ), selected( $args['status'], $k, false ), esc_html( $v ) );
@@ -316,6 +324,15 @@ class WR_Admin {
 			printf( '<option value="%d"%s>%s</option>', (int) $p->id, selected( $args['product'], (int) $p->id, false ), esc_html( $p->name ?: $p->code ) );
 		}
 		echo '</select> <button class="button">Αναζήτηση</button></form>';
+
+		if ( current_user_can( 'wr_manage' ) ) {
+			echo '<details class="wr-export"><summary>Εξαγωγή σε Excel (CSV)</summary>' . self::form_open( 'warranties_export' ); // phpcs:ignore
+			foreach ( array( 'status' => $args['status'], 'product' => $args['product'] ?: '', 's' => $args['q'] ) as $k => $v ) {
+				echo '<input type="hidden" name="' . esc_attr( $k ) . '" value="' . esc_attr( (string) $v ) . '">';
+			}
+			echo '<p>Η εξαγωγή περιέχει στοιχεία πελατών χωρίς απόκρυψη. Επιβεβαιώστε με τον κωδικό 2FA. Η ενέργεια καταγράφεται και ειδοποιείται το email της εταιρείας.</p>';
+			echo '<p><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" required placeholder="Κωδικός 2FA" class="wr-otp"> <button class="button">Εξαγωγή ' . esc_html( number_format_i18n( $total ) ) . ' εγγυήσεων</button></p></form></details>';
+		}
 
 		printf( '<p>%s εγγυήσεις</p>', esc_html( number_format_i18n( $total ) ) );
 		echo '<table class="widefat striped"><thead><tr><th>Κωδικός</th><th>Σειριακός</th><th>Προϊόν</th><th>Πελάτης</th><th>Email</th><th>Κινητό</th><th>Έναρξη</th><th>Λήξη</th><th>Κατάσταση</th></tr></thead><tbody>';
@@ -327,8 +344,8 @@ class WR_Admin {
 				esc_html( $r->serial ),
 				esc_html( WR_Warranties::product_label( $r ) ),
 				esc_html( $r->anonymized_at ? '(ανωνυμοποιημένο)' : $r->full_name ),
-				esc_html( $r->email ),
-				esc_html( $r->phone ),
+				esc_html( WR_Util::mask_email( $r->email ) ),
+				esc_html( WR_Util::mask_phone( $r->phone ) ),
 				esc_html( WR_Util::format_date( $r->starts_on ) ),
 				esc_html( WR_Util::format_date( $r->expires_on ) ),
 				self::badge( WR_Warranties::effective_status( $r ) ) // phpcs:ignore
@@ -518,7 +535,8 @@ class WR_Admin {
 		}
 		WR_Warranties::update( $id, $new );
 		if ( $changes ) {
-			WR_Audit::log( 'warranty_update', 'warranty', $id, $changes );
+			// Field names only: the audit log must not become a second copy of personal data.
+			WR_Audit::log( 'warranty_update', 'warranty', $id, array( 'fields' => array_keys( $changes ) ) );
 		}
 		self::notice( 'Τα στοιχεία αποθηκεύτηκαν.' );
 		self::back( self::url( 'wr-warranties', array( 'id' => $id ) ) );
@@ -584,11 +602,20 @@ class WR_Admin {
 
 	public static function action_warranties_export(): void {
 		self::guard( 'warranties_export', 'wr_manage' );
+		if ( ! WR_Access::check_code( (string) wp_unslash( $_POST['code'] ?? '' ), 'export' ) ) {
+			self::notice( 'Λάθος κωδικός 2FA. Η εξαγωγή δεν έγινε.', 'error' );
+			self::back( self::url( 'wr-warranties' ) );
+		}
 		global $wpdb;
 		$args  = array();
 		$where = self::warranty_where( $args );
-		$rows  = $wpdb->get_results( WR_Warranties::base_select() . " WHERE $where ORDER BY w.id DESC" );
+		$rows  = WR_Warranties::fetch_all( WR_Warranties::base_select() . " WHERE $where ORDER BY w.id DESC" );
 		WR_Audit::log( 'warranties_export', 'warranty', null, array_merge( $args, array( 'rows' => count( $rows ) ) ) );
+		$user = wp_get_current_user();
+		$to   = (string) WR_Settings::get( 'admin_email' );
+		if ( $to ) {
+			wp_mail( $to, '[Εγγυήσεις] Εξαγωγή στοιχείων πελατών', sprintf( "Ο χρήστης %s εξήγαγε %d εγγυήσεις με στοιχεία πελατών.\nIP: %s\nΏρα: %s", $user->user_login, count( $rows ), WR_Util::client_ip(), WR_Util::now() ) );
+		}
 
 		nocache_headers();
 		header( 'Content-Type: text/csv; charset=UTF-8' );
@@ -1037,7 +1064,7 @@ class WR_Admin {
 				esc_html( $l->sent_at ),
 				esc_html( $kinds[ $l->kind ] ?? $l->kind ),
 				'sms' === $l->channel ? 'SMS' : 'Email',
-				esc_html( $l->recipient ),
+				esc_html( WR_Crypto::decrypt( $l->recipient ) ),
 				'sent' === $l->status ? '<span class="wr-badge wr-badge--active">Στάλθηκε</span>' : '<span class="wr-badge wr-badge--void">Απέτυχε</span> ' . esc_html( (string) $l->error ),
 				$with_link ? '<td>' . ( $l->warranty_id ? '<a href="' . esc_url( self::url( 'wr-warranties', array( 'id' => $l->warranty_id ) ) ) . '">#' . (int) $l->warranty_id . '</a>' : '' ) . '</td>' : ''
 			);
@@ -1216,6 +1243,86 @@ class WR_Admin {
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Security & access                                                   */
+	/* ------------------------------------------------------------------ */
+
+	public static function page_security(): void {
+		$yes = '<span class="wr-badge wr-badge--active">Ναι</span>';
+		$no  = '<span class="wr-badge wr-badge--void">Όχι</span>';
+		$opt = '<span class="wr-badge wr-badge--expired">Δεν έχει οριστεί</span>';
+
+		echo '<div class="wrap wr-wrap"><h1>Ασφάλεια & πρόσβαση</h1>';
+		echo '<div class="wr-panel"><h2>Κατάσταση</h2><table class="widefat striped wr-sec"><tbody>';
+		$rows = array(
+			array( 'Κρυπτογράφηση στοιχείων πελατών (WR_ENCRYPTION_KEY)', WR_Crypto::ready() ? $yes : $no, 'Ονοματεπώνυμα, email, τηλέφωνα, σημειώσεις, IP και στοιχεία συσκευής αποθηκεύονται κρυπτογραφημένα.' ),
+			array( 'Υποχρεωτική επαλήθευση δύο βημάτων (2FA)', $yes, sprintf( 'Ανά σύνδεση, δεμένη με IP και browser. Λήγει μετά από %d λεπτά αδράνειας ή %d ώρες.', defined( 'WR_IDLE_MINUTES' ) ? (int) WR_IDLE_MINUTES : 30, defined( 'WR_2FA_SESSION_HOURS' ) ? (int) WR_2FA_SESSION_HOURS : 8 ) ),
+			array( 'Επιτρεπόμενοι χρήστες (WR_ALLOWED_USERS)', defined( 'WR_ALLOWED_USERS' ) && WR_ALLOWED_USERS ? esc_html( (string) WR_ALLOWED_USERS ) : $opt, 'Μόνο αυτοί οι χρήστες βλέπουν το σύστημα εγγυήσεων, ανεξάρτητα από τον ρόλο τους.' ),
+			array( 'Επιτρεπόμενες IP (WR_ALLOWED_IPS)', defined( 'WR_ALLOWED_IPS' ) && WR_ALLOWED_IPS ? esc_html( (string) WR_ALLOWED_IPS ) : $opt, 'Πρόσβαση μόνο από το γραφείο / VPN. Η τρέχουσα IP σας: <code>' . esc_html( WR_Util::client_ip() ) . '</code>' ),
+			array( 'HTTPS', is_ssl() ? $yes : $no, 'Απαραίτητο για την προστασία των cookies σύνδεσης.' ),
+			array( 'Απενεργοποιημένη επεξεργασία αρχείων από το admin (DISALLOW_FILE_EDIT)', defined( 'DISALLOW_FILE_EDIT' ) && DISALLOW_FILE_EDIT ? $yes : $no, 'Αποτρέπει την αλλαγή κώδικα από το wp-admin αν παραβιαστεί λογαριασμός.' ),
+			array( 'CAPTCHA στις δημόσιες φόρμες', WR_Security::captcha_enabled() ? $yes : $no, 'Cloudflare Turnstile – ρυθμίζεται στις Ρυθμίσεις.' ),
+		);
+		foreach ( $rows as $r ) {
+			echo '<tr><th>' . esc_html( $r[0] ) . '</th><td>' . $r[1] . '</td><td>' . wp_kses( $r[2], array( 'code' => array() ) ) . '</td></tr>'; // phpcs:ignore
+		}
+		echo '</tbody></table>';
+		echo '<p>Οι ρυθμίσεις πρόσβασης ορίζονται <strong>μόνο</strong> στο <code>wp-config.php</code>, ώστε να μην μπορούν να αλλάξουν από το wp-admin ακόμη κι αν παραβιαστεί λογαριασμός διαχειριστή. Παράδειγμα:</p>';
+		echo '<pre class="wr-snippet">define( \'WR_ALLOWED_USERS\', \'' . esc_html( wp_get_current_user()->user_login ) . '\' );           // χρήστες, χωρισμένοι με κόμμα' . "\n"
+			. 'define( \'WR_ALLOWED_IPS\', \'' . esc_html( WR_Util::client_ip() ?: '203.0.113.10' ) . '\' );      // IP ή δίκτυα (CIDR), χωρισμένα με κόμμα' . "\n"
+			. 'define( \'WR_IDLE_MINUTES\', 30 );        // λήξη μετά από αδράνεια' . "\n"
+			. 'define( \'WR_2FA_SESSION_HOURS\', 8 );    // μέγιστη διάρκεια επαλήθευσης' . "\n"
+			. 'define( \'DISALLOW_FILE_EDIT\', true );</pre>';
+		echo '<p class="description">Προσοχή με το WR_ALLOWED_IPS: αν η IP του γραφείου σας είναι δυναμική, μπορεί να κλειδωθείτε έξω. Τότε αφαιρέστε τη γραμμή από το wp-config.php μέσω cPanel → File Manager.</p></div>';
+
+		$users = get_users( array( 'fields' => 'all' ) );
+		echo '<div class="wr-panel"><h2>Χρήστες με πρόσβαση</h2><table class="widefat striped"><thead><tr><th>Χρήστης</th><th>Ρόλος</th><th>Δικαιώματα</th><th>2FA</th><th>Τελευταία επαλήθευση</th><th></th></tr></thead><tbody>';
+		foreach ( $users as $u ) {
+			$caps = array_values( array_filter( WR_Access::CAPS, fn( $c ) => ! empty( $u->allcaps[ $c ] ) ) );
+			if ( ! $caps ) {
+				continue;
+			}
+			$allowed = WR_Access::user_allowed( $u );
+			$last    = self::last_audit( 'twofa_success', $u->ID );
+			$reset   = WR_Access::has_2fa( $u->ID )
+				? self::form_open( 'twofa_reset', 'data-confirm="Ο χρήστης θα πρέπει να ρυθμίσει ξανά την εφαρμογή επαλήθευσης. Συνέχεια;"' ) . '<input type="hidden" name="user_id" value="' . (int) $u->ID . '"><button class="button button-small">Επαναφορά 2FA</button></form>'
+				: '';
+			printf(
+				'<tr><td>%s<br><small>%s</small></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				esc_html( $u->user_login ),
+				esc_html( $u->user_email ),
+				esc_html( implode( ', ', $u->roles ) ),
+				$allowed ? esc_html( implode( ', ', $caps ) ) : '<span class="wr-badge wr-badge--void">Αποκλεισμένος (WR_ALLOWED_USERS)</span>', // phpcs:ignore
+				WR_Access::has_2fa( $u->ID ) ? '<span class="wr-badge wr-badge--active">Ενεργό</span>' : '<span class="wr-badge wr-badge--expired">Δεν έχει ρυθμιστεί</span>', // phpcs:ignore
+				esc_html( $last ?: '—' ),
+				$reset // phpcs:ignore
+			);
+		}
+		echo '</tbody></table><p class="description">Η «Επαναφορά 2FA» χρειάζεται όταν κάποιος χάσει το κινητό του και τους κωδικούς ανάκτησης. Στην επόμενη είσοδο θα ρυθμίσει ξανά την εφαρμογή.</p></div>';
+
+		global $wpdb;
+		$events = $wpdb->get_results( 'SELECT * FROM ' . WR_DB::table( 'audit_log' ) . " WHERE action IN ('twofa_failed','twofa_lockout','twofa_reset','twofa_enabled','twofa_recovery_used','access_denied','warranties_export') ORDER BY id DESC LIMIT 30" );
+		echo '<div class="wr-panel"><h2>Πρόσφατα συμβάντα ασφαλείας</h2>';
+		self::render_audit( $events, true );
+		echo '</div></div>';
+	}
+
+	private static function last_audit( string $action, int $user_id ): ?string {
+		global $wpdb;
+		return $wpdb->get_var( $wpdb->prepare( 'SELECT MAX(created_at) FROM ' . WR_DB::table( 'audit_log' ) . ' WHERE action = %s AND object_type = %s AND object_id = %d', $action, 'user', $user_id ) );
+	}
+
+	public static function action_twofa_reset(): void {
+		self::guard( 'twofa_reset', 'wr_manage' );
+		$uid = absint( $_POST['user_id'] ?? 0 );
+		if ( $uid ) {
+			WR_Access::reset_user( $uid );
+			self::notice( 'Η επαλήθευση δύο βημάτων επαναφέρθηκε. Ο χρήστης θα τη ρυθμίσει ξανά στην επόμενη είσοδο.' );
+		}
+		wp_safe_redirect( self::url( 'wr-security' ) );
+		exit;
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* Audit                                                               */
 	/* ------------------------------------------------------------------ */
 
@@ -1236,9 +1343,10 @@ class WR_Admin {
 			$u   = $r->user_id ? get_userdata( (int) $r->user_id ) : null;
 			$obj = '';
 			if ( $with_object && $r->object_id ) {
+				$ou  = 'user' === $r->object_type ? get_userdata( (int) $r->object_id ) : null;
 				$obj = 'warranty' === $r->object_type
 					? '<a href="' . esc_url( self::url( 'wr-warranties', array( 'id' => $r->object_id ) ) ) . '">εγγύηση #' . (int) $r->object_id . '</a>'
-					: esc_html( $r->object_type . ' #' . $r->object_id );
+					: esc_html( $ou ? 'χρήστης ' . $ou->user_login : $r->object_type . ' #' . $r->object_id );
 			}
 			printf(
 				'<tr><td>%s</td><td>%s</td><td>%s</td>%s<td><code class="wr-details">%s</code></td><td>%s</td></tr>',

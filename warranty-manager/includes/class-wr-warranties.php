@@ -50,6 +50,9 @@ class WR_Warranties {
 		global $wpdb;
 		$serials = WR_DB::table( 'serials' );
 		$warr    = WR_DB::table( 'warranties' );
+		if ( ! WR_Crypto::ready() ) {
+			return new WP_Error( 'wr_no_key', 'encryption key missing' );
+		}
 
 		// Claim the serial atomically: only one concurrent request can flip it.
 		$claimed = $wpdb->query( $wpdb->prepare( "UPDATE $serials SET status = 'activated' WHERE id = %d AND status = 'available'", $serial_id ) );
@@ -73,13 +76,10 @@ class WR_Warranties {
 			$code = WR_Util::generate_code();
 			$ok   = (bool) $wpdb->insert(
 				$warr,
-				array(
+				self::encrypt_pii( $customer ) + array(
 					'code'       => $code,
 					'serial_id'  => $serial_id,
 					'product_id' => $serial->product_id,
-					'full_name'  => $customer['full_name'],
-					'email'      => $customer['email'],
-					'phone'      => $customer['phone'],
 					'starts_on'  => $start,
 					'expires_on' => $expires,
 					'status'     => 'active',
@@ -105,8 +105,8 @@ class WR_Warranties {
 				'terms_version' => $terms->version,
 				'terms_hash'    => $terms->content_hash,
 				'accepted_at'   => $now,
-				'ip_address'    => $consent['ip'] ?? null,
-				'user_agent'    => $consent['user_agent'] ?? null,
+				'ip_address'    => WR_Crypto::encrypt( $consent['ip'] ?? '' ),
+				'user_agent'    => WR_Crypto::encrypt( $consent['user_agent'] ?? '' ),
 				'recorded_by'   => (int) ( $consent['recorded_by'] ?? 0 ),
 			)
 		);
@@ -127,7 +127,51 @@ class WR_Warranties {
 	private static function query_one( string $where, $value ): ?object {
 		global $wpdb;
 		$sql = self::base_select() . " WHERE $where";
-		return $wpdb->get_row( $wpdb->prepare( $sql, $value ) ) ?: null;
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $value ) );
+		return $row ? self::hydrate( $row ) : null;
+	}
+
+	/**
+	 * Runs a query built on base_select() and decrypts personal data in each row.
+	 * $sql must already be prepared.
+	 */
+	public static function fetch_all( string $sql ): array {
+		global $wpdb;
+		return array_map( array( __CLASS__, 'hydrate' ), $wpdb->get_results( $sql ) );
+	}
+
+	const PII = array( 'full_name', 'email', 'phone', 'notes' );
+
+	public static function hydrate( object $w ): object {
+		foreach ( self::PII as $f ) {
+			if ( property_exists( $w, $f ) ) {
+				$w->$f = WR_Crypto::decrypt( $w->$f );
+			}
+		}
+		return $w;
+	}
+
+	/**
+	 * Turns plaintext personal fields into ciphertext columns plus blind indexes.
+	 * Only the keys present in $data are touched.
+	 */
+	public static function encrypt_pii( array $data ): array {
+		$out = array();
+		foreach ( self::PII as $f ) {
+			if ( array_key_exists( $f, $data ) ) {
+				$out[ $f ] = WR_Crypto::encrypt( (string) $data[ $f ] );
+			}
+		}
+		if ( array_key_exists( 'email', $data ) ) {
+			$out['email_idx'] = WR_Crypto::email_index( (string) $data['email'] );
+		}
+		if ( array_key_exists( 'phone', $data ) ) {
+			$out['phone_idx'] = WR_Crypto::phone_index( (string) $data['phone'] );
+		}
+		if ( array_key_exists( 'full_name', $data ) ) {
+			$out['name_idx'] = substr( WR_Crypto::name_index( (string) $data['full_name'] ), 0, 255 );
+		}
+		return $out;
 	}
 
 	public static function base_select(): string {
@@ -168,6 +212,7 @@ class WR_Warranties {
 
 	public static function update( int $id, array $data ): void {
 		global $wpdb;
+		$data = self::encrypt_pii( $data ) + array_diff_key( $data, array_flip( self::PII ) );
 		$data['updated_at'] = WR_Util::now();
 		$wpdb->update( WR_DB::table( 'warranties' ), $data, array( 'id' => $id ) );
 	}
@@ -187,7 +232,7 @@ class WR_Warranties {
 				'full_name'     => '',
 				'email'         => '',
 				'phone'         => '',
-				'notes'         => null,
+				'notes'         => '',
 				'anonymized_at' => WR_Util::now(),
 			)
 		);
@@ -198,6 +243,11 @@ class WR_Warranties {
 	public static function consents( int $warranty_id ): array {
 		global $wpdb;
 		$c = WR_DB::table( 'consents' );
-		return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $c WHERE warranty_id = %d ORDER BY id", $warranty_id ) );
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $c WHERE warranty_id = %d ORDER BY id", $warranty_id ) );
+		foreach ( $rows as $r ) {
+			$r->ip_address = WR_Crypto::decrypt( $r->ip_address );
+			$r->user_agent = WR_Crypto::decrypt( $r->user_agent );
+		}
+		return $rows;
 	}
 }

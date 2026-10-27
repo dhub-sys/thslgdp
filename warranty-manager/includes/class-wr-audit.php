@@ -46,6 +46,13 @@ class WR_Audit {
 			'settings_save'       => 'Αποθήκευση ρυθμίσεων',
 			'retention_anonymize' => 'Αυτόματη ανωνυμοποίηση (διατήρηση)',
 			'privacy_erase'       => 'Διαγραφή μέσω εργαλείων απορρήτου',
+			'twofa_enabled'       => 'Ενεργοποίηση 2FA',
+			'twofa_success'       => 'Επιτυχής επαλήθευση 2FA',
+			'twofa_failed'        => 'Λάθος κωδικός 2FA',
+			'twofa_lockout'       => 'Κλείδωμα μετά από λάθος κωδικούς 2FA',
+			'twofa_reset'         => 'Επαναφορά 2FA χρήστη',
+			'twofa_recovery_used' => 'Χρήση κωδικού ανάκτησης',
+			'access_denied'       => 'Άρνηση πρόσβασης (χρήστης/IP εκτός λίστας)',
 		);
 		return $labels[ $action ] ?? $action;
 	}
